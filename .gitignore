@@ -1,0 +1,36 @@
+# ==========================
+# 1. 数据集与预处理特征 (Datasets & Features)
+# ==========================
+weibo/
+weibo21/
+weibo_enhance/
+weibo21_enhance/
+src/data/
+llm_topic_features/
+
+# ==========================
+# 2. 模型权重与超大文件 (Model Weights & Large Files)
+# ==========================
+*.pt
+*.pth
+*.pkl
+*.ckpt
+*.h5
+src/param_model/
+src/pretrained_model/
+
+# ==========================
+# 3. 运行日志与可视化输出 (Logs, Caches & Plots)
+# ==========================
+__pycache__/
+.cache/
+src/log/
+src/plot_results/
+
+# ==========================
+# 4. 系统与 IDE 缓存 (System & IDE)
+# ==========================
+.DS_Store
+.idea/
+.vscode/
+.ipynb_checkpoints/
