@@ -214,33 +214,21 @@ class OVLAFNDMODEL(torch.nn.Module):
         self.text_classifier = MLP(320, mlp_dims, dropout)
         self.image_classifier = MLP(320, mlp_dims, dropout)
         self.fusion_classifier = MLP(320, mlp_dims, dropout)
-
-        # === [核心修改] 替换为连续开放主题路由模块 ===
         num_latent_topics = 16
         self.text_classifier_Mu = TopicPrototypeRouting(320, num_topics=num_latent_topics, dropout=dropout)
         self.image_classifier_Mu = TopicPrototypeRouting(320, num_topics=num_latent_topics, dropout=dropout)
         self.fusion_classifier_Mu = TopicPrototypeRouting(320, num_topics=num_latent_topics, dropout=dropout)
-        # ==========================================
-
-        # === [新增] Open-Vocabulary 语义锚定投影模块 ===
-        # 将内部 160 维的 Prototype 聚合特征映射到 LLM 的 512 维自然语言语义空间
-        # 严格遵守不降维原则，通过 MLP 逐步升维至 512
         self.semantic_projector = nn.Sequential(
             nn.Linear(160, 320),
             nn.GELU(),
             nn.LayerNorm(320),
             nn.Linear(320, 512)
         )
-        # ==========================================
-
         self.max_classifier = MLP(320 * 1, mlp_dims, dropout)
-
         self.domain_aware_text_classifier = MLP(320 * 1, mlp_dims, dropout)
         self.domain_aware_image_classifier = MLP(320 * 1, mlp_dims, dropout)
         self.domain_aware_fusion_classifier = MLP(320 * 1, mlp_dims, dropout)
-
         self.domain_aware_total_classifier = MLP(320 * 1, mlp_dims, dropout)
-
         share_classifier_list = []
         for i in range(self.domain_num):
             share_classifier = MLP(320, mlp_dims, dropout)
@@ -274,9 +262,7 @@ class OVLAFNDMODEL(torch.nn.Module):
         self.image_model.load_state_dict(checkpoint['model'], strict=False)
         for param in self.image_model.parameters():
             param.requires_grad = False
-
         self.ClipModel, _ = load_from_name("ViT-B-16", device="cuda", download_root='./')
-
         self.fake_news_layernorm = LayerNorm(320 * 3, eps=1e-12)
         self.domain_classification_layernorm = LayerNorm(320 * 1, eps=1e-12)
         self.gate_trans = nn.Sequential(
@@ -285,7 +271,6 @@ class OVLAFNDMODEL(torch.nn.Module):
             nn.Linear(3 * 320, 320 * 1, bias=False),
             nn.GELU(),
         )
-
         self.query_text = nn.Sequential(
             nn.Linear(320, 320),
             torch.nn.BatchNorm1d(320),
@@ -304,7 +289,6 @@ class OVLAFNDMODEL(torch.nn.Module):
             nn.GELU(),
             nn.Linear(320, 1, bias=False)
         )
-
         self.softmax = nn.Softmax(dim=-1)
 
         self.gate_image_prefer = nn.Sequential(
@@ -314,7 +298,6 @@ class OVLAFNDMODEL(torch.nn.Module):
             nn.Linear(320, 320),
             nn.Sigmoid()
         )
-
         self.gate_text_prefer = nn.Sequential(
             nn.Linear(320, 320),
             torch.nn.BatchNorm1d(320),
@@ -528,16 +511,9 @@ class OVLAFNDMODEL(torch.nn.Module):
                             weight_common[:, 2].squeeze() * domain_aware_fusion_view
 
         fake_news_sigmoid = torch.clamp(fake_news_sigmoid, min=0.0, max=1.0)
-
-        # === [纯新增] 计算在 LLM 语义空间的映射 ===
-        # 融合多域概率 [batch, 16] 与 Prototype [16, 160] 矩阵乘法
         expected_topic_feature = torch.matmul(fusion_multi_domain, self.fusion_classifier_Mu.prototypes)
         projected_semantics = self.semantic_projector(expected_topic_feature)
-        # =======================================
-        # projected_semantics = torch.tensor(0.0).cuda()
-        # 注意：return 列表最后加上 projected_semantics，其他原封不动
         return fake_news_sigmoid, text_fake_news, text_multi_domain, image_fake_news, image_multi_domain, fusion_fake_news, fusion_multi_domain, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view, logic_logit, logic_logit_neg, projected_semantics, fake_news_feature, multi_label_feature
-
 
 class Trainer():
     def __init__(self, emb_dim, mlp_dims, bert, use_cuda, lr, dropout, train_loader, val_loader, test_loader,
@@ -601,38 +577,24 @@ class Trainer():
             for step_n, batch in enumerate(train_data_iter):
                 batch_data = clipdata2gpu(batch)
                 label = batch_data['label']
-
-                # 1. 解包时在最后增加 projected_semantics
                 label0, text_fake_news, text_multi_domain, image_fake_news, \
                 image_multi_domain, fusion_fake_news, fusion_multi_domain, \
                 domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view, \
                 logic_logit, logic_logit_neg, projected_semantics,fake_news_feature, multi_label_feature = self.model(**batch_data)
-
                 loss0 = loss_fn(label0, label.float())
-
                 loss12_aux = loss_fn(domain_aware_text_view.squeeze(), label.float())
                 loss22_aux = loss_fn(domain_aware_image_view.squeeze(), label.float())
                 loss32_auc = loss_fn(domain_aware_fusion_view.squeeze(), label.float())
-
-                # === [核心修改] 修复后的 Open Topic Loss 逻辑 ===
                 num_topics = 16
-
-                # 1. 解耦约束 (Orthogonal Disentanglement)
                 text_topic_log_prob = torch.log(text_multi_domain + 1e-8)
                 image_topic_log_prob = torch.log(image_multi_domain + 1e-8)
                 fusion_topic_log_prob = torch.log(fusion_multi_domain + 1e-8)
-
                 uniform_target = torch.ones_like(text_multi_domain, dtype=torch.float).cuda() / num_topics
-
                 loss12 = F.kl_div(text_topic_log_prob, uniform_target, reduction='batchmean')
                 loss22 = F.kl_div(image_topic_log_prob, uniform_target, reduction='batchmean')
                 loss32 = F.kl_div(fusion_topic_log_prob, uniform_target, reduction='batchmean')
-
-                # 2. 主题一致性约束 (Topic Consistency Loss)
                 loss_topic_consistency = F.mse_loss(text_multi_domain, image_multi_domain) + \
                                          F.mse_loss(fusion_multi_domain, text_multi_domain)
-                # ==========================================
-
                 smooth_factor = 0.05
                 smooth_target = torch.where(
                     label.float() == 1,
@@ -642,9 +604,7 @@ class Trainer():
                 loss_logic_abs = torch.nn.functional.binary_cross_entropy_with_logits(
                     logic_logit.squeeze(), smooth_target
                 )
-
                 loss_logic_rel = torch.tensor(0.0).cuda()
-
                 if logic_logit_neg is not None and 'enhanced' in batch_data:
                     enhanced_mask = batch_data['enhanced'].float()
                     if enhanced_mask.sum() > 0:
@@ -655,64 +615,38 @@ class Trainer():
                             logic_logit.squeeze() - logic_logit_neg.squeeze() + dynamic_margin
                         )
                         loss_logic_rel = (contrastive_loss * enhanced_mask).sum() / (enhanced_mask.sum() + 1e-8)
-
                 lambda_abs_rel = 0.5
-                # lambda_abs_rel = 0.0
                 total_logic_loss = loss_logic_abs + lambda_abs_rel * loss_logic_rel
-
                 lambda_logic = 0.2 * min(1.0, epoch / 10.0)
-                # lambda_logic = 0.0
-                # === [纯新增] 附加正则化：抗过拟合与特征坍缩 ===
                 loss_semantic_align = torch.tensor(0.0).cuda()
                 loss_proto_ortho = torch.tensor(0.0).cuda()
-
                 if 'llm_topic_embs' in batch_data:
                     llm_semantics = batch_data['llm_topic_embs'].cuda()
-
-                    # 1. InfoNCE 语义对比学习 (Batch-wise Contrastive)
-                    # 作用：不修改你的 margin 参数，但强制当前样本的特征不仅靠近自己的 LLM 锚点，还要极力远离 Batch 内其他样本的锚点。这极大增加了学习难度，有效防止早期过拟合。
                     proj_norm = F.normalize(projected_semantics, p=2, dim=-1)
                     llm_norm = F.normalize(llm_semantics, p=2, dim=-1)
-
                     temperature = 0.07
                     sim_matrix = torch.matmul(proj_norm, llm_norm.T) / temperature
                     labels = torch.arange(proj_norm.size(0)).cuda()
                     loss_semantic_align = F.cross_entropy(sim_matrix, labels)
-
-                    # 2. Prototype 正交隔离正则化 (Orthogonality Regularization)
-                    # 作用：强制 16 个聚类中心在空间中必须相互垂直（独立）。这解决了原先 Logic 模块“躺平”的问题，因为它保证了底层提取出的特征是极度丰富且不重合的。
                     protos = self.model.fusion_classifier_Mu.prototypes
                     protos_norm = F.normalize(protos, p=2, dim=-1)
                     proto_sim = torch.matmul(protos_norm, protos_norm.T)
                     eye_matrix = torch.eye(protos_norm.size(0)).cuda()
                     loss_proto_ortho = F.mse_loss(proto_sim, eye_matrix)
-                # ====================================================
-
-                # === [这部分是你的原代码，一字不改] ===
                 loss = loss0 + \
                        (loss12_aux + loss22_aux + loss32_auc) / 3.0 + \
                        0.1 * (loss12 + loss22 + loss32) + \
                        0.5 * loss_topic_consistency + \
                        lambda_logic * total_logic_loss
-                # =================================
-                # loss = loss0 + \
-                #        (loss12_aux + loss22_aux + loss32_auc) / 3.0 + \
-                #        lambda_logic * total_logic_loss
-                # === [纯新增] 将新约束以外挂的形式叠加进去，不破坏原有平衡 ===
                 loss += 0.1 * loss_semantic_align
                 loss += 0.05 * loss_proto_ortho
-
-                # ====================================================
-
                 optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-
                 optimizer.step()
                 if (scheduler is not None):
                     scheduler.step()
                 avg_loss.add(loss.item())
-
             print('Epoch {}; Total: {:.4f}; Logic(Pos): {:.4f}; Logic(Neg): {:.4f}'.format(
                 epoch + 1, avg_loss.item(), loss_logic_abs.item(), loss_logic_rel.item()))
 
@@ -723,10 +657,8 @@ class Trainer():
                 f.write(
                     f"  Logic Loss: {total_logic_loss.item()} (Pos: {loss_logic_abs.item()}, Neg: {loss_logic_rel.item()})\n")
                 f.write("\n")
-
             print("----- self.save_param_dir", self.save_param_dir)
             results0 = self.test(self.val_loader)
-
             try:
                 val_acc = results0.get('acc', 0)
                 val_f1 = results0.get('metric', 0)
@@ -736,30 +668,23 @@ class Trainer():
 
             self.history['val_acc'].append(val_acc)
             self.history['val_f1'].append(val_f1)
-
             import copy
             self.history['val_details'].append(copy.deepcopy(results0))
-
             self.history['epoch'].append(epoch + 1)
             self.history['total_loss'].append(avg_loss.item())
             self.history['primary_loss'].append(loss0.item())
             self.history['logic_loss_total'].append(total_logic_loss.item())
             self.history['logic_loss_pos'].append(loss_logic_abs.item())
             self.history['logic_loss_neg'].append(loss_logic_rel.item())
-
             self.save_training_report()
-
             mark = recorder.add(results0)
-
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(f"=== Epoch {epoch + 1} Validation Results ===\n")
                 f.write(f"  Macro-F1: {val_f1:.4f} | Accuracy: {val_acc:.4f}\n")
                 f.write(f"  [Domain Details]:\n")
-
                 for key, value in results0.items():
                     if isinstance(value, dict):
                         f.write(f"    {key}: {value}\n")
-
                 if mark == 'save':
                     f.write(f"  >>> 🌟 【突破记录】发现更高 F1，保存该 Epoch 为最佳参数！\n")
                 elif mark == 'esc':
@@ -768,7 +693,6 @@ class Trainer():
                     f.write(f"  >>> 📉 【未提升】模型未达到历史最佳，继续训练...\n")
 
                 f.write("-" * 50 + "\n\n")
-
             if mark == 'save':
                 torch.save(self.model.state_dict(),
                            os.path.join(self.save_param_dir, 'parameter_ovlafnd_weibo.pkl'))
@@ -776,7 +700,6 @@ class Trainer():
                 break
             else:
                 continue
-
         self.model.load_state_dict(torch.load(os.path.join(self.save_param_dir, 'parameter_ovlafnd_weibo.pkl')))
         print("开始进行最后的测试")
         results0 = self.test(self.test_loader)
@@ -802,7 +725,6 @@ class Trainer():
         plt.ylabel('Loss')
         plt.legend()
         plt.grid(True)
-
         plt.subplot(1, 2, 2)
         plt.plot(self.history['epoch'], self.history['logic_loss_total'], label='Total Logic Loss', color='purple')
         plt.plot(self.history['epoch'], self.history['logic_loss_pos'], label='Positive Logic', color='green',
@@ -814,10 +736,8 @@ class Trainer():
         plt.ylabel('Loss')
         plt.legend()
         plt.grid(True)
-
         plt.savefig(os.path.join(self.current_run_dir, 'loss_analysis.png'))
         plt.close()
-
         plt.figure(figsize=(8, 5))
         plt.plot(self.history['epoch'], self.history['val_acc'], label='Val Accuracy', marker='o')
         plt.plot(self.history['epoch'], self.history['val_f1'], label='Val F1', marker='s')
@@ -826,28 +746,22 @@ class Trainer():
         plt.ylabel('Score')
         plt.legend()
         plt.grid(True)
-
         plt.savefig(os.path.join(self.current_run_dir, 'metric_curve.png'))
         plt.close()
-
         report_path = os.path.join(self.current_run_dir, 'detailed_report.txt')
-
         curr_loss0 = self.history['primary_loss'][-1]
         curr_logic_neg = self.history['logic_loss_neg'][-1]
         best_f1 = max(self.history['val_f1']) if self.history['val_f1'] else 0
-
         analysis = []
         run_time = os.path.basename(self.current_run_dir).replace('run_', '')
         analysis.append(f"=== OVLAFND Training Report ({run_time}) ===")
         analysis.append(f"Current Epoch: {self.history['epoch'][-1]}")
         analysis.append(f"Best Validation F1: {best_f1:.4f}")
         analysis.append("-" * 30)
-
         if curr_loss0 < 0.001:
             analysis.append("[WARNING] Primary Loss is extremely low (<0.001). Potential Overfitting to Training Data!")
             analysis.append(
                 "Recommendation: Increase Dropout or Weight Decay, or check if Validation Score is plateauing.")
-
         if curr_logic_neg < 0.01:
             analysis.append(
                 "[WARNING] Logic Negative Loss is near zero. Model might be collapsing (not learning contrast).")
@@ -880,10 +794,8 @@ class Trainer():
                 batch_data = clipdata2gpu(batch)
                 batch_label = batch_data['label']
                 batch_category = batch_data['category']
-
                 outputs = self.model(**batch_data)
                 batch_label_pred = outputs[0]
-
                 label.extend(batch_label.detach().cpu().numpy().tolist())
                 pred.extend(batch_label_pred.detach().cpu().numpy().tolist())
                 category.extend(batch_category.detach().cpu().numpy().tolist())
