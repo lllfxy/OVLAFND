@@ -334,20 +334,9 @@ class OVLAFNDMODEL(torch.nn.Module):
         self.attention = DomainAwareTransformer(dim=320, num_heads=8)
 
         self.tau = 0.5
-
-        # === [新增] 创新模块初始化 ===
-        # 1. 否定适配器 (输入是CLIP text维度 512)
         self.negation_adapter = NegationAdapter(input_dim=512)
-
-        # 2. 逻辑一致性模块 (输入是CLIP img/text 维度 512)
-        # 输出维度设为 320 以匹配原有系统的维度
         self.logic_module = LogicConsistencyModule(img_dim=512, text_dim=512, projection_dim=320)
-
-        # 3. 逻辑特征融合层 (将逻辑特征融入主干)
         self.logic_integrator = nn.Linear(320 + 320 * 4, 320)
-        # ===========================
-
-        # === Existing Code ===
         self.gate_fusion_prefer = nn.Sequential(
             nn.Linear(320, 320),
             torch.nn.BatchNorm1d(320),
@@ -355,21 +344,13 @@ class OVLAFNDMODEL(torch.nn.Module):
             nn.Linear(320, 320),
             nn.Sigmoid()
         )
-
-        # === [新增] 连续开放主题空间模块 (Open-Topic Module) ===
-        # We use 16 prototypes as it provides enough granularity without overfitting
         self.topic_memory = OpenTopicMemory(feature_dim=320, num_prototypes=16, tau=0.1)
-
         self.topic_modulate_text = nn.Linear(320, 320)
         self.topic_modulate_image = nn.Linear(320, 320)
         self.topic_modulate_fusion = nn.Linear(320, 320)
-        # === [全新架构：双空间知识蒸馏 (Dual-Space KD)] ===
-        # 在 512 维大模型空间中直接定义 16 个绝对语义锚点 (对应底层的 16 个 Prototype)
-        # 绝不降维！直接在 512 维空间操作，保证极强的可解释性。
         self.llm_semantic_anchors = nn.Parameter(torch.Tensor(16, 512))
         nn.init.orthogonal_(self.llm_semantic_anchors)
         self.llm_tau = 0.1
-        # =========================================================
     def forward(self, **kwargs):
         inputs = kwargs['content']
         masks = kwargs['content_masks']
@@ -379,52 +360,28 @@ class OVLAFNDMODEL(torch.nn.Module):
 
         clip_image = kwargs['clip_image']
         clip_text = kwargs['clip_text']
-
-        # [修改] 获取content_neg (若Dataloader未提供则为None)
         clip_content_neg = kwargs.get('clip_content_neg', None)
-
 
         with torch.no_grad():
             clip_image_feature = self.ClipModel.encode_image(clip_image)  # ([64, 512])
             clip_text_feature = self.ClipModel.encode_text(clip_text)  # ([64, 512])
             clip_image_feature /= clip_image_feature.norm(dim=-1, keepdim=True)
             clip_text_feature /= clip_text_feature.norm(dim=-1, keepdim=True)
-
-            # [新增] 编码反事实文本
             clip_neg_feature = None
             if clip_content_neg is not None:
                 clip_neg_feature = self.ClipModel.encode_text(clip_content_neg)
                 clip_neg_feature /= clip_neg_feature.norm(dim=-1, keepdim=True)
-
-        # === 创新点1: 应用否定适配器 (保持原有设计) ===
         adapted_text_feature = self.negation_adapter(clip_text_feature.float())
-
-        # adapted_text_feature = clip_text_feature.float()
-
-        # 保持原有的特征融合逻辑不变
         clip_fusion_feature_origin = torch.cat((clip_image_feature.float(), adapted_text_feature), dim=-1)
         clip_fusion_feature_base = self.clip_fusion(clip_fusion_feature_origin)
-
-        # === 创新点2: 计算逻辑一致性 (保持原有设计 - 正向逻辑) ===
-        # logic_logit: 原文与图片的逻辑匹配度
         logic_logit, logic_feats = self.logic_module(clip_image_feature.float(), adapted_text_feature)
 
         logic_logit_neg = None
         if clip_neg_feature is not None:
-            # 复用适配器：证明你的适配器学到了通用的否定语义，而不仅仅是过拟合了原文
             adapted_neg_feature = self.negation_adapter(clip_neg_feature.float())
-
-            # adapted_neg_feature = clip_neg_feature.float()
-
-            # 复用逻辑模块：用同一把尺子去衡量“一致”和“不一致”
             logic_logit_neg, _ = self.logic_module(clip_image_feature.float(), adapted_neg_feature)
-
-        # 融合特征 (保持原有逻辑，不破坏主干)
         combined_features = torch.cat([clip_fusion_feature_base, logic_feats], dim=-1)
         clip_fusion_feature = torch.relu(self.logic_integrator(combined_features))
-
-        # =================================
-
         text_atn_feature = self.text_attention(text_feature, masks)
         image_atn_feature, _ = self.image_attention(image_feature)
         fusion_feature = torch.cat((image_feature, text_feature), dim=-1)
@@ -434,8 +391,6 @@ class OVLAFNDMODEL(torch.nn.Module):
         text_gate_input = text_atn_feature  # ([64, 1536])
         image_gate_input = image_atn_feature
         fusion_gate_input = fusion_atn_feature
-
-        # Multi-view Features Extraction and Aggregation
 
         text_gate_out_list = []
         for i in range(self.domain_num):
@@ -499,9 +454,6 @@ class OVLAFNDMODEL(torch.nn.Module):
         image_gate_expert_value.append(image_experts_feature0)
         image_gate_expert_value.append(image_experts_feature1)
 
-        # clip_fusion_feature
-        # fusion
-
         text = text_gate_share_expert_value[0]
         image = image_gate_share_expert_value[0]
         fusion_share_feature = torch.cat((clip_fusion_feature, text, image), dim=-1)
@@ -539,8 +491,7 @@ class OVLAFNDMODEL(torch.nn.Module):
         fusion_experts_feature1 = att[:, 1].view(-1, 1) * fusion_experts_feature
         fusion_gate_expert_value0.append(fusion_experts_feature0)
         fusion_gate_expert_value0.append(fusion_experts_feature1)
-
-        # text
+        
         text_two_task = []
         image_two_task = []
         fusion_two_task = []
@@ -551,32 +502,19 @@ class OVLAFNDMODEL(torch.nn.Module):
         fusion_two_task.append(self.fusion_classifier(fusion_gate_expert_value0[0]).squeeze(1))
         fusion_two_task.append(self.fusion_classifier_Mu(fusion_gate_expert_value0[1]).squeeze(1))
 
-
         multi_label_feature = text_gate_expert_value[0] + image_gate_expert_value[0] + fusion_gate_expert_value0[0]
         fake_news_feature = text_gate_expert_value[1] + image_gate_expert_value[1] + fusion_gate_expert_value0[1]
-
-        # === [核心创新：梯度缩放魔法 (Gradient Scaling)] ===
-
-        # 2. 生成底层的路由权重 topic_weights (shape: [B, 16])
         topic_rep, topic_weights = self.topic_memory(multi_label_feature)
 
-        # === [核心创新：获取 LLM 视角的完美聚类分布] ===
         llm_target_weights = None
         llm_topic_embs = kwargs.get('llm_topic_embs', None)
 
         if llm_topic_embs is not None:
-            # 严格 L2 归一化
             llm_norm = F.normalize(llm_topic_embs.float(), p=2, dim=-1)
             anchor_norm = F.normalize(self.llm_semantic_anchors, p=2, dim=-1)
-
-            # 计算每条新闻在 512 维空间中，对 16 个语义锚点的相似度
-            # 经过 Softmax 后，得到一个完美的 16 维概率分布 (Teacher)
             sim = torch.matmul(llm_norm, anchor_norm.T) / self.llm_tau
             llm_target_weights = F.softmax(sim, dim=-1)
-        # ========================================================
 
-        # ========================================================
-        # 2. Modulate features based on continuous topic (Soft routing)
         topic_gate_text = torch.sigmoid(self.topic_modulate_text(topic_rep))
         topic_gate_image = torch.sigmoid(self.topic_modulate_image(topic_rep))
         topic_gate_fusion = torch.sigmoid(self.topic_modulate_fusion(topic_rep))
@@ -584,9 +522,7 @@ class OVLAFNDMODEL(torch.nn.Module):
         text_domain_features = topic_gate_text * text_gate_expert_value[0]
         image_domain_features = topic_gate_image * image_gate_expert_value[0]
         fusion_domain_features = topic_gate_fusion * fusion_gate_expert_value0[0]
-        # =========================================================
-
-
+   
         text_domain_features = self.gate_text_prefer(fake_news_feature) * text_domain_features
         image_domain_features = self.gate_image_prefer(fake_news_feature) * image_domain_features
         fusion_domain_features = self.gate_fusion_prefer(fake_news_feature) * fusion_domain_features
@@ -598,7 +534,6 @@ class OVLAFNDMODEL(torch.nn.Module):
         domain_aware_fusion_view = torch.sigmoid(
             self.domain_aware_fusion_classifier(fusion_gate_expert_value0[0] + fusion_domain_features).squeeze())
 
-        # Domain-Enhanced Multi-view Decision Layer
         weight_common = self.attention(
             [text_gate_expert_value[0], image_gate_expert_value[0], fusion_gate_expert_value0[0]], multi_label_feature)
 
@@ -608,7 +543,6 @@ class OVLAFNDMODEL(torch.nn.Module):
 
         fake_news_sigmoid = torch.clamp(fake_news_sigmoid, min=0.0, max=1.0)
 
-        # [修改 Return]：返回底层的 weights 和 LLM 的 target_weights 供 Trainer 算 Loss
         return fake_news_sigmoid, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view, logic_logit, logic_logit_neg, topic_rep, fake_news_feature, topic_weights, llm_target_weights
 
 class Trainer():
@@ -649,7 +583,6 @@ class Trainer():
         else:
             self.save_param_dir = save_param_dir
 
-            # === [新增] 初始化训练历史记录容器 ===
             self.history = {
                 'epoch': [],
                 'total_loss': [],
@@ -662,40 +595,25 @@ class Trainer():
                 'val_f1': [],
                 'val_details': []
             }
-            # === [修改] 初始化每次运行的专属日志文件夹 ===
-            base_log_dir = '/home/fxy/project/OVLAFND/src/log/weibo21'  # 基础 log 目录
-
-            # 生成精确到时分秒的时间戳
+            base_log_dir = '/home/fxy/project/OVLAFND/src/log/weibo21'  
             run_timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-
-            # 拼接出本次运行的专属文件夹路径 (例如: log/run_2026-03-09_15-30-00)
             self.current_run_dir = os.path.join(base_log_dir, f"run_{run_timestamp}")
-
-            # 创建这个专属文件夹
             if not os.path.exists(self.current_run_dir):
                 os.makedirs(self.current_run_dir)
-
-            # 预定义主 log 文件的路径，供后续调用
             self.log_file = os.path.join(self.current_run_dir, "training_log.txt")
-            # ============================================
 
     def train(self):
         self.model = OVLAFNDMODEL(self.emb_dim, self.mlp_dims, self.bert, 320, self.dropout)
         if self.use_cuda:
             self.model = self.model.cuda()
         loss_fn = torch.nn.BCELoss()
-        # 修改
         optimizer = torch.optim.Adam(params=self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.98)
-        # 修改
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epoches, eta_min=1e-6)
-
         recorder = Recorder(self.early_stop)
 
         for epoch in range(self.epoches):
             self.model.train()
             train_data_iter = tqdm.tqdm(self.train_loader)
-            # [修正] 在这里实例化 Averager，相当于每个 epoch 自动重置
             avg_loss = Averager()
 
             for step_n, batch in enumerate(train_data_iter):
@@ -703,132 +621,76 @@ class Trainer():
                 label = batch_data['label']
                 category = batch_data['multi_category']
                 labels_domain = category
-
-                # 接收所有的返回值
                 label0, domain_aware_text_view, domain_aware_image_view, domain_aware_fusion_view, \
                 logic_logit, logic_logit_neg, topic_rep, fake_news_feature, topic_weights, llm_target_weights = self.model(
                     **batch_data)
                 loss0 = loss_fn(label0, label.float())
-
-
                 loss12_aux = loss_fn(domain_aware_text_view.squeeze(), label.float())
                 loss22_aux = loss_fn(domain_aware_image_view.squeeze(), label.float())
                 loss32_auc = loss_fn(domain_aware_fusion_view.squeeze(), label.float())
-
-                # === [新增] 正交解耦损失 (Orthogonal Disentanglement Loss) ===
-                # This mathematically forces the "Topic" to be completely independent of "Fake/Real"
-                # Equation: $$ \mathcal{L}_{orth} = \frac{1}{N} \sum | \cos(topic\_rep, fake\_news\_feature) | $$
                 cosine_sim = F.cosine_similarity(topic_rep, fake_news_feature, dim=-1)
                 loss_orth = torch.mean(torch.abs(cosine_sim))
-
-                # === [新增修改 6] 逻辑增强损失 (Logic Augmentation Loss) ===
-                # 1. 绝对逻辑损失 (加入标签平滑，防止 Loss 降为 0)
-                # 目标不再是 0.0 和 1.0，而是 0.1 和 0.9。
-                # 这样即使模型预测完美，BCE Loss 也会维持在 0.3 左右，保持梯度流动。
                 smooth_factor = 0.1
-                # label 0 -> target 0.1; label 1 -> target 0.9
                 smooth_target = torch.where(
                     label.float() == 1,
                     torch.tensor(1.0 - smooth_factor).cuda(),
                     torch.tensor(smooth_factor).cuda()
                 )
-                # 1. 绝对逻辑损失 (您原有的设计，保持不变)
-                # 任务：让模型直接学会判断 (图, 原文) 的逻辑是否与标签匹配
                 loss_logic_abs = torch.nn.functional.binary_cross_entropy_with_logits(
                     logic_logit.squeeze(), smooth_target
                 )
-
-                # 2. 相对逻辑损失 (新增的动态边距对比损失)
-                # 任务：让模型学会 (图, 反事实文) 比 (图, 原文) 更不一致
                 loss_logic_rel = torch.tensor(0.0).cuda()
 
                 if logic_logit_neg is not None and 'enhanced' in batch_data:
                     enhanced_mask = batch_data['enhanced'].float()
                     if enhanced_mask.sum() > 0:
-                        # [修改] 大幅提升 Margin，强迫模型拉开巨大差距
-                        # 之前的 0.5 太容易满足了，现在改为 1.0 和 1.2
-                        m_base = 0.6  # 对 Fake 新闻，反事实要比原文更假  分
-                        m_bonus = 0.2  # 对 Real 新闻，反事实要比原文更假  分
+                        m_base = 0.6  
+                        m_bonus = 0.2  
                         dynamic_margin = m_base + (1.0 - label.float()) * m_bonus
-
                         y_sign = 2.0 * label.float() - 1.0
                         contrastive_loss = F.relu(
                             dynamic_margin - y_sign * (logic_logit.squeeze() - logic_logit_neg.squeeze())
                         )
-
                         loss_logic_rel = (contrastive_loss * enhanced_mask).sum() / (enhanced_mask.sum() + 1e-8)
-
-                    # 3. 融合 (加大相对损失的权重，因为它是这里的难点)
-                    # 之前是 0.2，现在提升到 0.5，让它在总 Logic Loss 中占一般
                 lambda_abs_rel = 0.3
                 total_logic_loss = loss_logic_abs + lambda_abs_rel * loss_logic_rel
-
-                # 4. 总权重
-                lambda_logic = 0.2  # 保持您想要的权重
-
-                # === [修改] 总 Loss 整合 ===
-                # Notice we replaced the rigid domain losses with 0.1 * loss_orth
+                lambda_logic = 0.2  
                 lambda_orth = 0.1
-                # === [计算极速对齐损失] ===
-                # === [计算软标签蒸馏损失 (Soft-Target KD Loss)] ===
                 loss_align = torch.tensor(0.0).cuda()
                 if llm_target_weights is not None:
-                    # 使用 MSE 让底层路由 (Student) 完美模仿 LLM 路由 (Teacher)
-                    # 这种只对齐分布不对齐特征的做法，被证明能极大提高分类上限！
                     loss_align = torch.nn.functional.mse_loss(topic_weights, llm_target_weights)
-                # ========================================================
-                # 【关键】因为概率 MSE 的绝对值通常只有 0.01 左右，必须放大权重才能生效！
                 lambda_align = 10.0
-
                 loss = loss0 + lambda_orth * loss_orth + \
                        (loss12_aux + loss22_aux + loss32_auc) / 3.0 + \
                        lambda_logic * total_logic_loss + \
                        lambda_align * loss_align
-
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 if (scheduler is not None):
                     scheduler.step()
                 avg_loss.add(loss.item())
-
-            # 打印日志 (观察 Neg 是否不再为 0)
-            # === [修改] 打印日志 + 数据记录 ===
-            # print('Epoch {}; Total: {:.4f}; Logic(Pos): {:.4f}; Logic(Neg): {:.4f}'.format(
-            #     epoch + 1, avg_loss.item(), loss_logic_abs.item(), loss_logic_rel.item()))
             print('Epoch {}; Total: {:.4f}; Logic(Pos): {:.4f}; Logic(Neg): {:.4f}; Align: {:.4f}'.format(
                 epoch + 1, avg_loss.item(), loss_logic_abs.item(), loss_logic_rel.item(), loss_align.item()))
-            # print('Training Epoch {}; Loss {}; Logic Loss {}'.format(epoch + 1, avg_loss.item(), total_logic_loss.item()))
-
-            # NEW: Log to file per epoch
             with open(self.log_file, 'a') as f:
                 f.write(f"Epoch {epoch + 1}:\n")
                 f.write(f"  Total Loss: {avg_loss.item()}\n")
                 f.write(f"  Primary Loss (loss0): {loss0.item()}\n")
                 f.write(
-                    # f"  Logic Loss: {total_logic_loss.item()} (Pos: {loss_logic_abs.item()}, Neg: {loss_logic_rel.item()}, Align: {loss_align.item()})\n")
                     f"  Logic Loss: {total_logic_loss.item()} (Pos: {loss_logic_abs.item()}, Neg: {loss_logic_rel.item()})\n")
                 f.write("\n")
-
             print("----- self.save_param_dir", self.save_param_dir)
             results0 = self.test(self.val_loader)
-
             try:
-                # 如果 metricsTrueFalse 返回的是字典 (推荐)
                 val_acc = results0.get('acc', 0)
                 val_f1 = results0.get('metric', 0)
             except AttributeError:
-                # 如果 metricsTrueFalse 返回的是列表或字符串，这里暂时填 0，你需要检查 utils.py
                 val_acc = 0
                 val_f1 = 0
-
             self.history['val_acc'].append(val_acc)
             self.history['val_f1'].append(val_f1)
-
             import copy
             self.history['val_details'].append(copy.deepcopy(results0))
-
-            # 记录数据
             self.history['epoch'].append(epoch + 1)
             self.history['total_loss'].append(avg_loss.item())
             self.history['primary_loss'].append(loss0.item())
@@ -836,23 +698,16 @@ class Trainer():
             self.history['logic_loss_pos'].append(loss_logic_abs.item())
             self.history['logic_loss_neg'].append(loss_logic_rel.item())
             self.history['loss_align'].append(loss_align.item())
-            self.save_training_report()  # 生成图表
-            # === [新增] 每个 Epoch 结束后生成图表和报告 ===
-
-
+            self.save_training_report()  
             mark = recorder.add(results0)
-
             with open(self.log_file, 'a', encoding='utf-8') as f:
                 f.write(f"=== Epoch {epoch + 1} Validation Results ===\n")
                 f.write(f"  Macro-F1: {val_f1:.4f} | Accuracy: {val_acc:.4f}\n")
                 f.write(f"  [Domain Details]:\n")
-
-                # 遍历并打印当前 epoch 的每个领域数据
                 for key, value in results0.items():
                     if isinstance(value, dict):
                         f.write(f"    {key}: {value}\n")
 
-                # 记录 Recorder 的动作判定
                 if mark == 'save':
                     f.write(f"  >>> 🌟 【突破记录】发现更高 F1，保存该 Epoch 为最佳参数！\n")
                 elif mark == 'esc':
@@ -861,8 +716,6 @@ class Trainer():
                     f.write(f"  >>> 📉 【未提升】模型未达到历史最佳，继续训练...\n")
 
                 f.write("-" * 50 + "\n\n")
-
-
             if mark == 'save':
                 torch.save(self.model.state_dict(),
                            os.path.join(self.save_param_dir, 'parameter_OVLAFND_weibo21.pkl'))
@@ -874,20 +727,13 @@ class Trainer():
         print("开始进行最后的测试")
         results0 = self.test(self.test_loader)
         print("final: ", results0)
-
         with open(self.log_file, 'a') as f:
             f.write("Final Test Results:\n")
             f.write(str(results0) + "\n")
-
         return results0, os.path.join(self.save_param_dir, 'parameter_OVLAFND_weibo21.pkl')
-
-        # === [新增] 绘图与报告生成函数 ===
-
     def save_training_report(self):
         import matplotlib.pyplot as plt
         import json
-
-        # 1. 绘制 Loss 曲线 (Total & Primary)
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
         plt.plot(self.history['epoch'], self.history['total_loss'], label='Total Loss', color='blue')
@@ -898,8 +744,6 @@ class Trainer():
         plt.ylabel('Loss')
         plt.legend()
         plt.grid(True)
-
-        # 2. 绘制 Logic Loss 详情 (Pos vs Neg)
         plt.subplot(1, 2, 2)
         plt.plot(self.history['epoch'], self.history['logic_loss_total'], label='Total Logic Loss', color='purple')
         plt.plot(self.history['epoch'], self.history['logic_loss_pos'], label='Positive Logic', color='green',
@@ -913,12 +757,8 @@ class Trainer():
         plt.ylabel('Loss')
         plt.legend()
         plt.grid(True)
-
-        # [修改] 保存 Loss 图片到专属文件夹，统一命名
         plt.savefig(os.path.join(self.current_run_dir, 'loss_analysis.png'))
         plt.close()
-
-        # 3. 绘制 Validation Metrics 曲线
         plt.figure(figsize=(8, 5))
         plt.plot(self.history['epoch'], self.history['val_acc'], label='Val Accuracy', marker='o')
         plt.plot(self.history['epoch'], self.history['val_f1'], label='Val F1', marker='s')
@@ -927,35 +767,22 @@ class Trainer():
         plt.ylabel('Score')
         plt.legend()
         plt.grid(True)
-
-        # [修改] 保存 Metric 图片到专属文件夹
         plt.savefig(os.path.join(self.current_run_dir, 'metric_curve.png'))
         plt.close()
-
-        # 4. 生成详细的文本分析报告
-        # [修改] 保存报告到专属文件夹
         report_path = os.path.join(self.current_run_dir, 'detailed_report.txt')
-
-        # 获取最新数据
         curr_loss0 = self.history['primary_loss'][-1]
         curr_logic_neg = self.history['logic_loss_neg'][-1]
         best_f1 = max(self.history['val_f1']) if self.history['val_f1'] else 0
-
         analysis = []
-        # 报告头部也可以加入当前运行的时间戳以示区分
         run_time = os.path.basename(self.current_run_dir).replace('run_', '')
         analysis.append(f"=== OVLAFND Training Report ({run_time}) ===")
         analysis.append(f"Current Epoch: {self.history['epoch'][-1]}")
         analysis.append(f"Best Validation F1: {best_f1:.4f}")
         analysis.append("-" * 30)
-
-        # 过拟合检测逻辑
         if curr_loss0 < 0.001:
             analysis.append("[WARNING] Primary Loss is extremely low (<0.001). Potential Overfitting to Training Data!")
             analysis.append(
                 "Recommendation: Increase Dropout or Weight Decay, or check if Validation Score is plateauing.")
-
-        # Logic 模块有效性检测
         if curr_logic_neg < 0.01:
             analysis.append(
                 "[WARNING] Logic Negative Loss is near zero. Model might be collapsing (not learning contrast).")
@@ -970,11 +797,8 @@ class Trainer():
         for i in range(max(0, len(self.history['epoch']) - 5), len(self.history['epoch'])):
             analysis.append(
                 f"Epoch {self.history['epoch'][i]}: Total={self.history['total_loss'][i]:.4f} | Val F1={self.history['val_f1'][i]:.4f}")
-
         with open(report_path, 'w') as f:
             f.write('\n'.join(analysis))
-
-        # [修改] 保存 JSON 到专属文件夹
         with open(os.path.join(self.current_run_dir, 'training_history.json'), 'w') as f:
             json.dump(self.history, f)
 
@@ -989,7 +813,6 @@ class Trainer():
                 batch_data = clipdata2gpu(batch)
                 batch_label = batch_data['label']
                 batch_category = batch_data['category']
-                # [修改] 解包时忽略多余的返回值
                 outputs = self.model(**batch_data)
                 batch_label_pred = outputs[0]
 
