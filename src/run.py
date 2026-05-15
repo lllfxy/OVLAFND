@@ -1,7 +1,6 @@
 import os
 from utils.clip_dataloader import bert_data as weibo_data
 from utils.weibo21_clip_dataloader import bert_data as weibo21_data
-# === 分别导入两个不同模型的 Trainer ===
 from model.ovlafnd import Trainer as OVLAFNDTrainer
 from model.ovlafnd_weibo import Trainer as OVLAFNDWeiboTrainer
 
@@ -36,9 +35,9 @@ class Run():
         if config['dataset']=="weibo":
             self.root_path = '/home/fxy/project/OVLAFND/weibo_enhance/'
 
-            self.train_path = self.root_path + 'train_2_domain.csv'  # 如果9个领域就要改成train.csv
-            self.val_path = self.root_path + 'val_2_domain.csv'  # 如果9个领域就要改成val.csv
-            self.test_path = self.root_path + 'test_2_domain.csv'  # 如果9个领域就要改成test.csv
+            self.train_path = self.root_path + 'train_2_domain.csv'  
+            self.val_path = self.root_path + 'val_2_domain.csv'  
+            self.test_path = self.root_path + 'test_2_domain.csv' 
             self.category_dict = {
                 "经济": 0,
                 "健康": 1,
@@ -82,7 +81,7 @@ class Run():
                 "文体娱乐": 7,
                 "社会生活": 8
             }
-            # # === [修改 2] 拼接 LODO 实验文件夹中的文件 ===
+
             # self.train_path = os.path.join(self.fold_dir, 'train.xlsx')
             # self.val_path = os.path.join(self.fold_dir, 'val.xlsx')
             # self.test_path = os.path.join(self.fold_dir, 'test.xlsx')
@@ -107,9 +106,8 @@ class Run():
             val_loader = loader.load_data(self.val_path, './data/val_loader.pkl', './data/val_clip_loader.pkl', False)
             test_loader = loader.load_data(self.test_path, './data/test_loader.pkl', './data/test_clip_loader.pkl',
                                            False)
-        # clip_weibo21 - 修改这部分，使用正确的路径
+
         if dataset == "weibo21":
-            # 确保使用 weibo21 目录下的 pkl 文件
             train_loader = loader.load_data(self.train_path, './weibo21/train_loader.pkl',
                                             './weibo21/train_clip_loader.pkl', True)
             val_loader = loader.load_data(self.val_path, './weibo21/val_loader.pkl', './weibo21/val_clip_loader.pkl',
@@ -126,11 +124,8 @@ class Run():
             config_dict[k] = v
         return config_dict
 
-
-    # =================================
     def main(self):
         train_loader, val_loader, test_loader = self.get_dataloader(self.dataset)
-        # === 拆分 Trainer，保证互不干扰 ===
         if self.model_name == 'ovlafnd':
             trainer = OVLAFNDTrainer(
                 emb_dim=self.emb_dim, mlp_dims=self.mlp_dims, bert=self.bert,
@@ -142,7 +137,7 @@ class Run():
             )
 
         elif self.model_name == 'ovlafnd_weibo':
-            trainer = OVLAFNDWeiboTrainer(  # 使用专属的 Trainer
+            trainer = OVLAFNDWeiboTrainer(  
                 emb_dim=self.emb_dim, mlp_dims=self.mlp_dims, bert=self.bert,
                 use_cuda=self.use_cuda, lr=self.lr, train_loader=train_loader,
                 dropout=self.dropout, weight_decay=self.weight_decay,
