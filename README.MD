@@ -16,7 +16,7 @@ pip install -r requirements.txt
 
 To run this code, you need to prepare the datasets and their corresponding preprocessed loader files:
 
-* Obtain the enhanced dataset file, which is located in the directory weibo_enhance/ weibo21_enhance/
+* Obtain the enhanced dataset file, which is located in the directory weibo_enhance/and weibo21_enhance/
 * To obtain the preprocessing loader, please refer to the pretrained model section in [preprocessed loaders](完整的网址 URL) to download the required models and directly place them in the directory src/
 ## Pretrained Models
 
