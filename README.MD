@@ -18,12 +18,13 @@ To run this code, you need to prepare the datasets and their corresponding prepr
 
 * Obtain the enhanced dataset files (including images and preprocessed loaders like `train_clip_loader.pkl`, `test_loader.pkl`, etc.).
 * Place them into the `weibo_enhance/` and `weibo21_enhance/` directories at the root level of the project.
-
+Please follow the specific instructions in the xxx to obtain and initially place the raw data.
 ## Pretrained Models
 
 To prepare the pretrained encoders:
 
-* Download the required vision/language weights: `clip_cn_vit-b-16.pt` and `mae_pretrain_vit_base.pth`.
+* Download the required vision/language weights: Please refer to the pre trained model section of the xxx on downloading the required model.
+`clip_cn_vit-b-16.pt` and `mae_pretrain_vit_base.pth`.
 * Place them directly into the `src/` directory.
 
 ## Training
@@ -32,10 +33,12 @@ To train and evaluate the OVLAFND model from scratch, navigate to the source cod
 
 ```bash
 cd src
+python main.py
 ```
-
-*(Note: Execute your training script here, e.g., `python main.py`)*
+Switching between different datasets requires modifying the relevant dataset path configuration in the script.
 
 ## Log
 
-*(You can put your training log descriptions or evaluation results here)*
+Based on the pre written code, experiments were conducted. Please refer to log_weibo and log_weibo21 under src for relevant logs.
+Note: Slight differences in results may be observed in different hardware configurations.
+
