@@ -17,14 +17,14 @@ pip install -r requirements.txt
 To run this code, you need to prepare the datasets and their corresponding preprocessed loader files:
 
 * Obtain the enhanced dataset file, which is located in the directory weibo_enhance/ weibo21_enhance/
-* To obtain the preprocessing loader, please refer to the pretrained model section in [链接显示的文本](完整的网址 URL) to download the required models and directly place them in the directory src/
+* To obtain the preprocessing loader, please refer to the pretrained model section in [preprocessed loaders](完整的网址 URL) to download the required models and directly place them in the directory src/
 ## Pretrained Models
 
 To prepare the pretrained encoders:
 
 * Download the required vision/language weights: `clip_cn_vit-b-16.pt` and `mae_pretrain_vit_base.pth`.
 * Place them directly into the `src/` directory.
-* Please refer to the pre trained model section of the [链接显示的文本](完整的网址 URL) on downloading the required model.
+* Please refer to the pre trained model section of the [clip_cn_vit-b-16.pt](完整的网址 URL) and [mae_pretrain_vit_base.pth](完整的网址 URL) downloading the required model.
 ## Training
 
 To train and evaluate the OVLAFND model from scratch, navigate to the source code directory:
