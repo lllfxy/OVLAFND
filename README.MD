@@ -17,8 +17,8 @@ pip install -r requirements.txt
 To run this code, you need to prepare the datasets and their corresponding preprocessed loader files:
 
 * Obtain the enhanced dataset file, which is located in the directory weibo_enhance/and weibo21_enhance/
-* To obtain the preprocessing loader, please refer to the pretrained model section in [weibo loaders](https://drive.google.com/drive/folders/1OP8jI0bHskcuDyC5DoCHFy9eXo4GuK6W?usp=drive_link) and[weibo21 loaders]()to download the required models and directly place them in the directory src/
-* To obtain the extracted LLM semantic feature data, please download it from [here (https://drive.google.com/drive/folders/1qtA5Tkgnron_4jodVfEQqVzIAykNBLe8?usp=drive_link)] and extract it to the llm_topic_features/ directory
+* To obtain the preprocessing loader, please refer to the pretrained model section in [weibo loaders](https://drive.google.com/drive/folders/1OP8jI0bHskcuDyC5DoCHFy9eXo4GuK6W?usp=drive_link) and[weibo21 loaders](https://drive.google.com/drive/folders/15pgl50QiWtbTKK5NZIX0VWl0aeDm1-kC?usp=drive_link)to download the required models and directly place them in the directory src/
+* To obtain the extracted LLM semantic feature data, please download it from [here] (https://drive.google.com/drive/folders/1qtA5Tkgnron_4jodVfEQqVzIAykNBLe8?usp=drive_link) and extract it to the llm_topic_features/ directory
 ## Pretrained Models
 
 To prepare the pretrained encoders:
