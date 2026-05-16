@@ -23,7 +23,7 @@ To run this code, you need to prepare the datasets and their corresponding prepr
 
 To prepare the pretrained encoders:
 
-* Download the required vision/language weights: `clip_cn_vit-b-16.pt` and `mae_pretrain_vit_base.pth`.
+* Download the required vision/language weights:  `clip_cn_vit-b-16.pt` and `mae_pretrain_vit_base.pth`.
 * Place them directly into the `src/` directory.
 * Please refer to the pre trained model section of the [clip_cn_vit-b-16.pt](https://drive.google.com/file/d/1S4LvHvYlDgofvwXPCz_V-JF4yuhEfLC8/view?usp=drive_link) and [mae_pretrain_vit_base.pth](https://drive.google.com/file/d/13Exyg1t7S4uR7iKbzzkjG5X10qpqajqX/view?usp=drive_link) downloading the required model.
 ## Training
