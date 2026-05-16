@@ -18,6 +18,7 @@ To run this code, you need to prepare the datasets and their corresponding prepr
 
 * Obtain the enhanced dataset file, which is located in the directory weibo_enhance/and weibo21_enhance/
 * To obtain the preprocessing loader, please refer to the pretrained model section in [preprocessed loaders](完整的网址 URL) to download the required models and directly place them in the directory src/
+* To obtain the extracted LLM semantic feature data, please download it from [here (insert the link to the cloud drive)] and extract it to the llm_topic_features/ directory
 ## Pretrained Models
 
 To prepare the pretrained encoders:
