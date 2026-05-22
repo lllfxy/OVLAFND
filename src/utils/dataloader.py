@@ -7,9 +7,7 @@ import torch
 from torchvision import transforms
 import os
 from PIL import Image
-# [新增] 引入 cn_clip
 import cn_clip.clip as clip
-
 
 def _init_fn(worker_id):
     np.random.seed(2024)
@@ -27,7 +25,6 @@ def word2input(texts, vocab_file, max_len):
         masks[i] = (token != 0)
     return token_ids, masks
 
-
 class bert_data():
     def __init__(self, max_len, batch_size, vocab_file, category_dict, num_workers=2):
         self.max_len = max_len
@@ -37,78 +34,50 @@ class bert_data():
         self.category_dict = category_dict
 
     def load_data(self, path, ttv, shuffle, text_only=False):
-        # === [修复] 兼容读取 CSV 和 Excel 格式 (Weibo21) ===
+
         if path.endswith('.csv'):
             self.data = pd.read_csv(path, encoding='utf-8', on_bad_lines='skip', engine='python')
         elif path.endswith('.xlsx'):
             self.data = pd.read_excel(path)
         else:
             raise ValueError(f"不支持的文件格式: {path}")
-
-        # 自动判断当前加载的是哪个数据集，以便去正确的文件夹找 pt 文件
         task_type = "weibo21" if "weibo21" in path.lower() else "weibo"
         pt_dir = f"/home/fxy/project/OVLAFND/llm_topic_features/{task_type}"
-        # ====================================================
-
-        # 1. 基础数据
         content = self.data['content'].astype('object').to_numpy()
         label = torch.tensor(self.data['label'].astype('object').astype(int).to_numpy())
         category = torch.tensor(
             self.data['category'].astype('object').apply(lambda c: self.category_dict[c]).to_numpy())
-
-        # 2. BERT Tokenize
         token_ids, masks = word2input(content, self.vocab_file, self.max_len)
-
-        # 3. 图像数据 (MAE用)
         ordered_image = pickle.load(open(ttv, 'rb'))
-
-        # 4. 读取 enhanced 标签 (用于 Mask Logic Loss)
         if 'enhanced' in self.data.columns:
             enhanced_col = self.data['enhanced'].apply(
                 lambda x: 1.0 if (str(x).lower() == 'true' or str(x) == '1' or str(x) == '1.0') else 0.0)
             enhanced = torch.tensor(enhanced_col.to_numpy(), dtype=torch.float)
         else:
             enhanced = torch.zeros(len(content), dtype=torch.float)
-
-        # 5. CLIP Text Tokenize (原始文本 & 否定文本)
         if 'content_neg' in self.data.columns:
             content_neg_list = self.data['content_neg'].fillna("").astype(str).tolist()
         else:
             content_neg_list = [""] * len(content)
 
-        print("正在进行 CLIP Tokenize (这可能需要几秒钟)...")
+        # print("正在进行 CLIP Tokenize (这可能需要几秒钟)...")
         clip_text = clip.tokenize(list(content), context_length=77)
         clip_content_neg = clip.tokenize(content_neg_list, context_length=77)
-
-        # 6. CLIP Image
         clip_image = ordered_image
-
-        # 7. Multi-category
         multi_category = category
-
-        # === [核心新增] 8. 批量加载 LLM 语义锚点 (.pt 特征) ===
-        print(f"正在加载 {task_type} 的 LLM 语义特征锚点...")
+        # print(f"正在加载 {task_type} 的 LLM 语义特征锚点...")
         llm_topic_embs = []
         for i in range(len(content)):
-            # 根据行号寻找对应的特征文件 (这和你预处理脚本里的 row_{index} 是严格对应的)
             pt_path = os.path.join(pt_dir, f"row_{i}_topic.pt")
-
             if os.path.exists(pt_path):
-                # 读取并去掉 batch 维度，变成 [512] 的一维张量
                 emb = torch.load(pt_path, map_location='cpu').squeeze(0)
             else:
-                # 兜底：如果没找到（比如测试集没跑），用全0填充
                 emb = torch.zeros(512)
             llm_topic_embs.append(emb)
-
-        # 将列表堆叠成一个大 Tensor，形状为 [数据总量, 512]
         llm_topic_embs = torch.stack(llm_topic_embs)
-        # ========================================================
-
         print(
             f"Dataset summary: ids={token_ids.shape}, img={ordered_image.shape}, enhanced={enhanced.shape}, llm_emb={llm_topic_embs.shape}")
 
-        # === 构造 TensorDataset ===
         datasets = TensorDataset(
             token_ids,  # 0: content (BERT ids)
             masks,  # 1: content_masks
@@ -120,7 +89,7 @@ class bert_data():
             multi_category,  # 7: multi_category
             clip_content_neg,  # 8: content_neg (CLIP Tokenized Tensor)
             enhanced,  # 9: enhanced (Float Tensor)
-            llm_topic_embs  # 10: llm_topic_emb (新增的 512 维特征) [修改这里]
+            llm_topic_embs  
         )
         print(f"TensorDataset items: {len(datasets.tensors)}")
 
