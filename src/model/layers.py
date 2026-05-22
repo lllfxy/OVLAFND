@@ -22,13 +22,12 @@ class TopicPrototypeRouting(torch.nn.Module):
 
         self.tau = 0.1  
 
-    def forward(self, x):
+      def forward(self, x):
         feat = self.feature_proj(x)  # [batch, dim]
         feat_norm = F.normalize(feat, p=2, dim=-1)
         proto_norm = F.normalize(self.prototypes, p=2, dim=-1)
         sim = torch.matmul(feat_norm, proto_norm.transpose(0, 1)) / self.tau
         topic_distribution = F.softmax(sim, dim=-1)
-        topic_distribution = topic_distribution + sim * 0.01 - (sim * 0.01).detach()
         return topic_distribution
 
 class OpenTopicMemory(nn.Module):
