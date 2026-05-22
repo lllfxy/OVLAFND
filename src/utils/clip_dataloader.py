@@ -9,10 +9,7 @@ from torchvision import datasets, models, transforms
 import os
 import numpy as np
 from PIL import Image
-
-
-import cn_clip.clip as clip  # 确保导入了 clip
-
+import cn_clip.clip as clip  
 
 def read_image():
     image_list = {}
@@ -73,13 +70,10 @@ class bert_data():
     def load_data(self, path, imagepath, clipimagepath, shuffle, text_only=False):
         self.data = pd.read_csv(path, encoding='utf-8')
 
-        # 1. 基础字段
         content = self.data['content'].astype('object').to_numpy()
         label = torch.tensor(self.data['label'].astype('object').astype(int).to_numpy())
         category = torch.tensor(
             self.data['category'].astype('object').apply(lambda c: self.category_dict[c]).to_numpy())
-
-        # 2. 多领域标签 (mul_category)
         num_domains = 9
         labels_multi_domain = torch.zeros(len(self.data), num_domains)
         for i, (cat1, cat2) in enumerate(zip(self.data['category'], self.data['领域'])):
@@ -88,54 +82,34 @@ class bert_data():
                 indices.append(self.category_dict[cat2])
             labels_multi_domain[i, indices] = 1
         mul_category = labels_multi_domain
-
-        # 3. BERT Tokenize
         token_ids, masks = word2input(content, self.vocab_file, self.max_len)
-
-        # 4. 图像特征加载
         ordered_image = pickle.load(open(imagepath, 'rb'))
         clip_image = pickle.load(open(clipimagepath, 'rb'))
-
-        # 5. CLIP 文本 Tokenize
         clip_text = clip.tokenize(list(content))
-
-        # 6. 处理否定文本 content_neg
         if 'content_neg' in self.data.columns:
             neg_content = self.data['content_neg'].fillna("无").astype(str).tolist()
         else:
             neg_content = ["无"] * len(self.data)
         clip_content_neg = clip.tokenize(neg_content)
-
-        # 7. 处理增强标记 enhanced (用于 Logic Loss Mask)
         if 'enhanced' in self.data.columns:
             # 将 True/1 转为 1.0, 其他转为 0.0
             enhanced_val = self.data['enhanced'].apply(lambda x: 1.0 if str(x).lower() in ['true', '1', '1.0'] else 0.0)
             enhanced = torch.tensor(enhanced_val.values, dtype=torch.float)
         else:
             enhanced = torch.zeros(len(self.data), dtype=torch.float)
-
-        # === [核心新增：8. 批量加载 LLM 语义锚点 (.pt 特征)] ===
-        print(f"正在加载 weibo 的 LLM 语义特征锚点...")
+        # print(f"正在加载 weibo 的 LLM 语义特征锚点...")
         pt_dir = "/home/fxy/project/DAMMFND/llm_topic_features/weibo"
         llm_topic_embs = []
         for i in range(len(self.data)):
-            # 根据行号寻找对应的特征文件
             pt_path = os.path.join(pt_dir, f"row_{i}_topic.pt")
-
             if os.path.exists(pt_path):
-                # 读取并去掉 batch 维度，变成 [512] 的一维张量
                 emb = torch.load(pt_path, map_location='cpu').squeeze(0)
             else:
-                # 兜底：如果没找到，用全0填充
                 emb = torch.zeros(512)
             llm_topic_embs.append(emb)
-
-        # 将列表堆叠成一个大 Tensor，形状为 [数据总量, 512]
         llm_topic_embs = torch.stack(llm_topic_embs)
         print(f"Loaded LLM topic embeddings: {llm_topic_embs.shape}")
-        # ========================================================
 
-        # === [新增修复：添加维度诊断与强制对齐逻辑] ===
         tensor_shapes = {
             "token_ids": token_ids.shape[0],
             "masks": masks.shape[0],
@@ -150,12 +124,8 @@ class bert_data():
             "llm_topic_embs": llm_topic_embs.shape[0]
         }
 
-        print("📊 [数据诊断] 各特征样本数量:", tensor_shapes)
-
-        # 找出最短的数据长度
+        # print("📊 [数据诊断] 各特征样本数量:", tensor_shapes)
         min_len = min(tensor_shapes.values())
-
-        # 如果长度不一致，强制全部截断到最小长度，防止 TensorDataset 崩溃
         if len(set(tensor_shapes.values())) > 1:
             print(f"⚠️ [警告] 发现数据长度不匹配！已强制对齐截断至最小长度: {min_len} 条")
             token_ids = token_ids[:min_len]
@@ -169,9 +139,6 @@ class bert_data():
             clip_content_neg = clip_content_neg[:min_len]
             enhanced = enhanced[:min_len]
             llm_topic_embs = llm_topic_embs[:min_len]
-        # ==============================================
-
-        # === [核心修复：更新 TensorDataset 塞入 11 个特征] ===
         datasets = TensorDataset(
             token_ids,  # 0
             masks,  # 1
