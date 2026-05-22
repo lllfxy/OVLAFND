@@ -6,42 +6,29 @@ import math
 import torch.nn as nn
 from torch.autograd import Function
 
-# model/layers.py
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-
 
 class TopicPrototypeRouting(torch.nn.Module):
     def __init__(self, input_dim, num_topics=16, dropout=0.1):
         super(TopicPrototypeRouting, self).__init__()
         self.num_topics = num_topics
-
-        # 降维并提取主题特征
         self.feature_proj = nn.Sequential(
             nn.Linear(input_dim, input_dim // 2),
             nn.BatchNorm1d(input_dim // 2),
             nn.GELU(),
             nn.Dropout(dropout)
         )
-
-        # 可学习的主题原型 (Topic Prototypes)
         self.prototypes = nn.Parameter(torch.randn(num_topics, input_dim // 2))
         nn.init.xavier_uniform_(self.prototypes)
 
-        self.tau = 0.1  # 温度系数，让分配更锐利
+        self.tau = 0.1  
 
     def forward(self, x):
         feat = self.feature_proj(x)  # [batch, dim]
         feat_norm = F.normalize(feat, p=2, dim=-1)
         proto_norm = F.normalize(self.prototypes, p=2, dim=-1)
-
-        # 计算余弦相似度并缩放
         sim = torch.matmul(feat_norm, proto_norm.transpose(0, 1)) / self.tau
-
-        # 输出软分配的主题概率分布 [batch, num_topics]
         topic_distribution = F.softmax(sim, dim=-1)
+        topic_distribution = topic_distribution + sim * 0.01 - (sim * 0.01).detach()
         return topic_distribution
 
 class OpenTopicMemory(nn.Module):
@@ -49,22 +36,14 @@ class OpenTopicMemory(nn.Module):
         super(OpenTopicMemory, self).__init__()
         self.tau = tau
         self.num_prototypes = num_prototypes
-
-        # Initialize K learnable prototypes
         self.prototypes = nn.Parameter(torch.Tensor(num_prototypes, feature_dim))
-        # Orthogonal initialization is CRITICAL here to prevent prototype collapse
         nn.init.orthogonal_(self.prototypes)
 
     def forward(self, x):
-        # x shape: [batch, feature_dim]
         x_norm = F.normalize(x, p=2, dim=-1)
         p_norm = F.normalize(self.prototypes, p=2, dim=-1)
-
-        # Calculate similarity and soft assignment
         sim = torch.matmul(x_norm, p_norm.T) / self.tau
         soft_weights = F.softmax(sim, dim=-1)
-
-        # Reconstruct the continuous topic representation
         topic_rep = torch.matmul(soft_weights, p_norm)
         return topic_rep, soft_weights
 
@@ -80,8 +59,6 @@ class NegationAdapter(torch.nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, input_dim)
         )
-
-        # 严格零初始化：保证 Epoch 1 时完全不干扰 CLIP 原始特征
         nn.init.zeros_(self.adapter[-1].weight)
         nn.init.zeros_(self.adapter[-1].bias)
 
@@ -91,13 +68,9 @@ class NegationAdapter(torch.nn.Module):
         delta = self.adapter(x)
         return self.norm(x + delta)
 
-
-
 class LogicConsistencyModule(torch.nn.Module):
     def __init__(self, img_dim, text_dim, projection_dim=320, dropout=0.1):
         super(LogicConsistencyModule, self).__init__()
-
-        # 将图文投影到同一维度 (带 LayerNorm 保证特征稳定)
         self.img_proj = nn.Sequential(
             nn.Linear(img_dim, projection_dim),
             nn.LayerNorm(projection_dim)
@@ -107,26 +80,20 @@ class LogicConsistencyModule(torch.nn.Module):
             nn.LayerNorm(projection_dim)
         )
 
-        # 经典 NLI 推理网络
         self.logic_reasoning = nn.Sequential(
             nn.Linear(projection_dim * 4, projection_dim),
-            nn.LayerNorm(projection_dim),  # 必须加 LayerNorm 防止特征溢出
+            nn.LayerNorm(projection_dim),  
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(projection_dim, 1)
         )
 
-        # 【核心秘诀】：极小值正态分布初始化
-        # 这确保了初始的 logic_logit 都在 0 附近。
-        # 因此 Epoch 1 的 Loss 会稳稳地落在 0.48 左右，然后慢慢下降！
         nn.init.normal_(self.logic_reasoning[-1].weight, std=0.01)
         nn.init.zeros_(self.logic_reasoning[-1].bias)
 
     def forward(self, img_emb, text_emb):
         i_vec = self.img_proj(img_emb)
         t_vec = self.text_proj(text_emb)
-
-        # 构造交互特征 (NLI 标准做法)
         diff = torch.abs(i_vec - t_vec)
         mul = i_vec * t_vec
 
